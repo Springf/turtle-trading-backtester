@@ -2,9 +2,9 @@ import yfinance as yf
 import pandas as pd
 from datetime import datetime
 
-ticker = "GLD"
-end_date = "2026-02-15"
-start_date = "2025-11-01"
+ticker = "USO"
+end_date = "2021-03-01"
+start_date = "2021-01-01"
 
 data = yf.download(ticker, start=start_date, end=end_date)
 if isinstance(data.columns, pd.MultiIndex):

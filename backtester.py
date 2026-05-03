@@ -63,7 +63,7 @@ def calculate_indicators(data, donchian_period, atr_period, donchian_exit_period
     
     return data
 
-def backtest(data, initial_capital, risk_per_trade, atr_multiplier, mode='long_only', max_leverage=1.0, exit_strategy='trailing'):
+def backtest(data, initial_capital, risk_per_trade, atr_multiplier, mode='long_only', max_leverage=1.0, exit_strategy='trailing', strict_cash=False):
     """Run the backtesting engine with proper cash tracking and no look-ahead bias."""
     cash = initial_capital
     position = 0 # absolute number of shares
@@ -97,6 +97,8 @@ def backtest(data, initial_capital, risk_per_trade, atr_multiplier, mode='long_o
         high = row['High']
         low = row['Low']
         
+        exited_today = False
+        
         # 1. Check for Exits or Pyramiding (using existing positions)
         exit_price = 0
         exit_reason = ""
@@ -118,20 +120,27 @@ def backtest(data, initial_capital, risk_per_trade, atr_multiplier, mode='long_o
                         'type': 'long', 'units': units, 'entry_date': entry_date, 'exit_date': date,
                         'avg_entry': avg_entry_price, 'exit_price': exit_price, 'shares': position,
                         'profit': profit, 'return_pct': (profit / (avg_entry_price * position)) * 100 if (avg_entry_price * position) > 0 else 0,
-                        'reason': exit_reason
+                        'reason': exit_reason, 'n_atr': n_atr
                     }
                     for i, unit in enumerate(current_trade_history):
                         trade_record[f'unit{i+1}_date'] = unit['date']; trade_record[f'unit{i+1}_price'] = unit['price']; trade_record[f'unit{i+1}_size'] = unit['size']
                     trades.append(trade_record)
                     data.at[date, 'Sell_Signal'] = exit_price
                     position = 0; units = 0; current_trade_history = []
+                    exited_today = True
                 else:
                     # Check for Pyramiding
                     if units < 4 and high > last_entry_price + (0.5 * n_atr):
                         add_price = last_entry_price + (0.5 * n_atr)
                         current_equity = cash + (close * position)
-                        total_power = current_equity * max_leverage
-                        if total_power > (position + unit_size) * add_price:
+                        
+                        if strict_cash:
+                            can_afford = cash > (unit_size * add_price)
+                        else:
+                            total_power = current_equity * max_leverage
+                            can_afford = total_power > (position + unit_size) * add_price
+                            
+                        if can_afford:
                             new_total_cost = (avg_entry_price * position) + (unit_size * add_price)
                             cash -= (unit_size * add_price)
                             position += unit_size
@@ -163,19 +172,26 @@ def backtest(data, initial_capital, risk_per_trade, atr_multiplier, mode='long_o
                         'type': 'short', 'units': units, 'entry_date': entry_date, 'exit_date': date,
                         'avg_entry': avg_entry_price, 'exit_price': exit_price, 'shares': position,
                         'profit': profit, 'return_pct': (profit / (avg_entry_price * position)) * 100 if (avg_entry_price * position) > 0 else 0,
-                        'reason': exit_reason
+                        'reason': exit_reason, 'n_atr': n_atr
                     }
                     for i, unit in enumerate(current_trade_history):
                         trade_record[f'unit{i+1}_date'] = unit['date']; trade_record[f'unit{i+1}_price'] = unit['price']; trade_record[f'unit{i+1}_size'] = unit['size']
                     trades.append(trade_record)
                     data.at[date, 'Cover_Signal'] = exit_price
                     position = 0; units = 0; current_trade_history = []
+                    exited_today = True
                 else:
                     if units < 4 and low < last_entry_price - (0.5 * n_atr):
                         add_price = last_entry_price - (0.5 * n_atr)
                         current_equity = cash - (close * position)
-                        total_power = current_equity * max_leverage
-                        if total_power > (position + unit_size) * add_price:
+                        
+                        if strict_cash:
+                            can_afford = cash > (unit_size * add_price)
+                        else:
+                            total_power = current_equity * max_leverage
+                            can_afford = total_power > (position + unit_size) * add_price
+
+                        if can_afford:
                             new_total_cost = (avg_entry_price * position) + (unit_size * add_price)
                             cash += (unit_size * add_price)
                             position += unit_size
@@ -191,8 +207,8 @@ def backtest(data, initial_capital, risk_per_trade, atr_multiplier, mode='long_o
                         if new_stop < stop_loss:
                             stop_loss = new_stop
 
-        # 2. Check for New Entries (if no position)
-        if position == 0:
+        # 2. Check for New Entries (if no position and didn't exit today)
+        if position == 0 and not exited_today:
             current_equity = cash
             if high > row['Donchian_Upper']:
                 entry_price = max(open_p, row['Donchian_Upper'])
@@ -261,7 +277,7 @@ def backtest(data, initial_capital, risk_per_trade, atr_multiplier, mode='long_o
             'type': position_type, 'units': units, 'entry_date': entry_date, 'exit_date': data_to_test.index[-1],
             'avg_entry': avg_entry_price, 'exit_price': final_price, 'shares': position,
             'profit': profit, 'return_pct': (profit / (avg_entry_price * position)) * 100 if (avg_entry_price * position) > 0 else 0,
-            'reason': "End of Period"
+            'reason': "End of Period", 'n_atr': n_atr
         }
         for i, unit in enumerate(current_trade_history):
             trade_record[f'unit{i+1}_date'] = unit['date']; trade_record[f'unit{i+1}_price'] = unit['price']; trade_record[f'unit{i+1}_size'] = unit['size']
@@ -278,12 +294,17 @@ def calculate_max_drawdown(equity_curve):
     min_dd = drawdown.min()
     return min_dd * 100 if not np.isnan(min_dd) else 0
 
-def export_trades(trades, ticker):
-    """Export trade list to a CSV file."""
+def export_trades(trades, ticker, params):
+    """Export trade list to a CSV file with parameters."""
     if not os.path.exists('test_output'):
         os.makedirs('test_output')
     
     df = pd.DataFrame(trades)
+    
+    # Add parameters as new columns
+    for key, value in params.items():
+        df[f'param_{key}'] = value
+        
     filename = f"test_output/{ticker}_trades_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     df.to_csv(filename, index=False)
     print(f"Trades exported to {filename}")
@@ -366,7 +387,7 @@ def print_stats(initial_capital, final_capital, trades, equity_curve):
         
     print("------------------------\n")
 
-def run_optimization(data, initial_capital, risk_per_trade, atr_period, d_range, m_range, mode, exit_strategy='trailing'):
+def run_optimization(data, initial_capital, risk_per_trade, atr_period, d_range, m_range, mode, exit_strategy='trailing', strict_cash=False):
     """Perform grid search optimization over Donchian and ATR parameters."""
     results = []
     
@@ -380,7 +401,7 @@ def run_optimization(data, initial_capital, risk_per_trade, atr_period, d_range,
         data_with_ind = calculate_indicators(data, d_period, atr_period)
         
         for m_mult in atr_multipliers:
-            final_cap, trades, equity_curve = backtest(data_with_ind.copy(), initial_capital, risk_per_trade, m_mult, mode, exit_strategy=exit_strategy)
+            final_cap, trades, equity_curve = backtest(data_with_ind.copy(), initial_capital, risk_per_trade, m_mult, mode, exit_strategy=exit_strategy, strict_cash=strict_cash)
             
             if final_cap is not None:
                 total_return = (final_cap - initial_capital) / initial_capital * 100
@@ -450,6 +471,7 @@ def main():
                         help="Select trade direction mode (default: long_only)")
     parser.add_argument("--exit-strategy", choices=['trailing', 'donchian'], default='trailing',
                         help="Select exit strategy: 'trailing' (ATR trail + Donchian) or 'donchian' (Donchian only)")
+    parser.add_argument("--strict-cash", action="store_true", help="Prevent using unrealized gains for pyramiding buying power")
     args = parser.parse_args()
     
     print("Welcome to the Donchian Channel & ATR Trading System")
@@ -482,6 +504,13 @@ def main():
     else:
         exit_strat_input = input("Enter Exit Strategy (trailing/donchian, default 'trailing'): ").strip().lower()
         exit_strategy = exit_strat_input if exit_strat_input in ['trailing', 'donchian'] else 'trailing'
+
+    # Strict Cash
+    if args.strict_cash:
+        strict_cash = True
+    else:
+        strict_input = input("Use Strict Cash mode? (y/n, default 'n'): ").strip().lower()
+        strict_cash = True if strict_input == 'y' else False
 
     if args.execute:
         # Donchian Periods
@@ -541,7 +570,7 @@ def main():
             m_step = float(m_step_input) if m_step_input.strip() else 0.5
             
             results_df = run_optimization(data, initial_capital, risk_per_trade, atr_period, 
-                                          (d_start, d_end, d_step), (m_start, m_end, m_step), args.mode, exit_strategy)
+                                          (d_start, d_end, d_step), (m_start, m_end, m_step), args.mode, exit_strategy, strict_cash)
             
             if not results_df.empty:
                 results_df = results_df.sort_values(by='ratio', ascending=False)
@@ -581,11 +610,21 @@ def main():
                 atr_multiplier = float(atr_mult_input) if atr_mult_input.strip() else 2.0
             
             data_with_ind = calculate_indicators(data, donchian_period, atr_period, donchian_exit_period)
-            final_capital, trades, equity_curve = backtest(data_with_ind, initial_capital, risk_per_trade, atr_multiplier, args.mode, exit_strategy=exit_strategy)
+            final_capital, trades, equity_curve = backtest(data_with_ind, initial_capital, risk_per_trade, atr_multiplier, args.mode, exit_strategy=exit_strategy, strict_cash=strict_cash)
             
             if final_capital is not None:
                 print_stats(initial_capital, final_capital, trades, equity_curve)
-                export_trades(trades, ticker)
+                params = {
+                    'initial_capital': initial_capital,
+                    'risk_per_trade': risk_per_trade,
+                    'donchian_period': donchian_period,
+                    'donchian_exit_period': donchian_exit_period,
+                    'atr_multiplier': atr_multiplier,
+                    'mode': args.mode,
+                    'exit_strategy': exit_strategy,
+                    'strict_cash': strict_cash
+                }
+                export_trades(trades, ticker, params)
                 
                 if args.plot:
                     plot_results(data_with_ind, ticker)
