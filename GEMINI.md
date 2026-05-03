@@ -16,7 +16,9 @@ This project provides a command-line interface (CLI) to backtest and optimize tr
 - **ATR (Average True Range):** Used for position sizing, pyramiding increments, and stop-loss distances.
 - **5-Year Historical Analysis:** Automatically fetches 5 years of data, rounded to the start of the calendar year.
 - **Annual Performance Summary:** Provides a year-by-year breakdown of trade counts and total profit.
+- **Performance Metrics:** Calculates Max Drawdown, Win Rate, and Average Profit per trade.
 - **Pyramiding:** Automatically adds up to 4 units to a position as the price moves in a favorable direction.
+- **Dynamic Currency Normalization:** Automatically handles stocks listed in Pence (GBX) by normalizing them to Pounds (GBP).
 - **Optimization:** Grid search functionality to find the best combination of Donchian periods and ATR multipliers.
 - **Output:** Generates trade logs (CSV), equity curves, and visual plots (PNG) stored in the `test_output/` directory.
 
@@ -31,7 +33,7 @@ pip install yfinance pandas numpy matplotlib
 ```
 
 ### Running a Backtest
-To run a standard backtest, execute the script and follow the interactive prompts for ticker symbol, capital, and risk parameters:
+To run a standard backtest, execute the script and follow the interactive prompts (or use CLI arguments):
 ```bash
 python backtester.py
 ```
@@ -49,7 +51,7 @@ python backtester.py
   ```bash
   python backtester.py --execute --ticker AAPL --capital 10000 --risk 2 --d-entry 20 --d-exit 10
   ```
-- **Custom Parameters via CLI:** Most parameters can now be passed as arguments to avoid interactive prompts.
+- **Custom Parameters via CLI:** Most parameters can be passed as arguments to bypass interactive prompts.
   ```bash
   python backtester.py --ticker SPY --capital 50000 --risk 1 --years 10 --d-entry 55 --d-exit 20 --atr-mult 3.0
   ```
@@ -65,7 +67,7 @@ python backtester.py
 
 - **Module Structure:** All core logic resides in `backtester.py`.
 - **Output Management:** All results (CSV and PNG) should be directed to the `test_output/` folder.
-- **Interactive Inputs:** The CLI currently relies on `input()` for configuration; future updates may migrate these to command-line arguments via `argparse`.
+- **CLI & Arguments:** The script uses `argparse` for configuration. Interactive `input()` calls are used as fallbacks if required arguments are missing.
 - **Error Handling:** Basic error handling for ticker data fetching is implemented in `get_data`.
 
 ## Future Enhancements
