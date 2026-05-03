@@ -63,7 +63,7 @@ def calculate_indicators(data, donchian_period, atr_period, donchian_exit_period
     
     return data
 
-def backtest(data, initial_capital, risk_per_trade, atr_multiplier, mode='long_only', max_leverage=1.0):
+def backtest(data, initial_capital, risk_per_trade, atr_multiplier, mode='long_only', max_leverage=1.0, exit_strategy='trailing'):
     """Run the backtesting engine with proper cash tracking and no look-ahead bias."""
     cash = initial_capital
     position = 0 # absolute number of shares
@@ -142,10 +142,11 @@ def backtest(data, initial_capital, risk_per_trade, atr_multiplier, mode='long_o
                             current_trade_history.append({'date': date, 'price': add_price, 'size': unit_size})
                             stop_loss = last_entry_price - (atr_multiplier * n_atr)
                     
-                    # Update Trailing Stop for TOMORROW
-                    new_stop = high - (row['ATR'] * atr_multiplier)
-                    if new_stop > stop_loss:
-                        stop_loss = new_stop
+                    # Update Trailing Stop for TOMORROW (only if strategy is 'trailing')
+                    if exit_strategy == 'trailing':
+                        new_stop = high - (row['ATR'] * atr_multiplier)
+                        if new_stop > stop_loss:
+                            stop_loss = new_stop
                 
             elif position_type == 'short':
                 if high >= stop_loss:
@@ -185,9 +186,10 @@ def backtest(data, initial_capital, risk_per_trade, atr_multiplier, mode='long_o
                             current_trade_history.append({'date': date, 'price': add_price, 'size': unit_size})
                             stop_loss = last_entry_price + (atr_multiplier * n_atr)
 
-                    new_stop = low + (row['ATR'] * atr_multiplier)
-                    if new_stop < stop_loss:
-                        stop_loss = new_stop
+                    if exit_strategy == 'trailing':
+                        new_stop = low + (row['ATR'] * atr_multiplier)
+                        if new_stop < stop_loss:
+                            stop_loss = new_stop
 
         # 2. Check for New Entries (if no position)
         if position == 0:
@@ -364,7 +366,7 @@ def print_stats(initial_capital, final_capital, trades, equity_curve):
         
     print("------------------------\n")
 
-def run_optimization(data, initial_capital, risk_per_trade, atr_period, d_range, m_range, mode):
+def run_optimization(data, initial_capital, risk_per_trade, atr_period, d_range, m_range, mode, exit_strategy='trailing'):
     """Perform grid search optimization over Donchian and ATR parameters."""
     results = []
     
@@ -378,7 +380,7 @@ def run_optimization(data, initial_capital, risk_per_trade, atr_period, d_range,
         data_with_ind = calculate_indicators(data, d_period, atr_period)
         
         for m_mult in atr_multipliers:
-            final_cap, trades, equity_curve = backtest(data_with_ind.copy(), initial_capital, risk_per_trade, m_mult, mode)
+            final_cap, trades, equity_curve = backtest(data_with_ind.copy(), initial_capital, risk_per_trade, m_mult, mode, exit_strategy=exit_strategy)
             
             if final_cap is not None:
                 total_return = (final_cap - initial_capital) / initial_capital * 100
@@ -446,6 +448,8 @@ def main():
     parser.add_argument("--atr-mult", type=float, help="ATR multiplier for stop loss")
     parser.add_argument("--mode", choices=['long_only', 'long_short'], default='long_only', 
                         help="Select trade direction mode (default: long_only)")
+    parser.add_argument("--exit-strategy", choices=['trailing', 'donchian'], default='trailing',
+                        help="Select exit strategy: 'trailing' (ATR trail + Donchian) or 'donchian' (Donchian only)")
     args = parser.parse_args()
     
     print("Welcome to the Donchian Channel & ATR Trading System")
@@ -472,6 +476,13 @@ def main():
         
     atr_period = 14
     
+    # Exit Strategy
+    if args.exit_strategy:
+        exit_strategy = args.exit_strategy
+    else:
+        exit_strat_input = input("Enter Exit Strategy (trailing/donchian, default 'trailing'): ").strip().lower()
+        exit_strategy = exit_strat_input if exit_strat_input in ['trailing', 'donchian'] else 'trailing'
+
     if args.execute:
         # Donchian Periods
         if args.d_entry:
@@ -530,7 +541,7 @@ def main():
             m_step = float(m_step_input) if m_step_input.strip() else 0.5
             
             results_df = run_optimization(data, initial_capital, risk_per_trade, atr_period, 
-                                          (d_start, d_end, d_step), (m_start, m_end, m_step), args.mode)
+                                          (d_start, d_end, d_step), (m_start, m_end, m_step), args.mode, exit_strategy)
             
             if not results_df.empty:
                 results_df = results_df.sort_values(by='ratio', ascending=False)
@@ -570,7 +581,7 @@ def main():
                 atr_multiplier = float(atr_mult_input) if atr_mult_input.strip() else 2.0
             
             data_with_ind = calculate_indicators(data, donchian_period, atr_period, donchian_exit_period)
-            final_capital, trades, equity_curve = backtest(data_with_ind, initial_capital, risk_per_trade, atr_multiplier, args.mode)
+            final_capital, trades, equity_curve = backtest(data_with_ind, initial_capital, risk_per_trade, atr_multiplier, args.mode, exit_strategy=exit_strategy)
             
             if final_capital is not None:
                 print_stats(initial_capital, final_capital, trades, equity_curve)
