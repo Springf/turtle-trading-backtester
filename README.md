@@ -49,7 +49,7 @@ The program supports various flags to bypass interactive prompts and enable spec
 | `--d-entry` | Donchian Entry Period (days) | `--d-entry 20` |
 | `--d-exit` | Donchian Exit Period (days) | `--d-exit 10` |
 | `--atr-mult` | ATR Multiplier for stop loss | `--atr-mult 2.5` |
-| `--mode` | Trade direction (`long_only`, `long_short`) | `--mode long_only` |
+| `--mode` | Trade direction (`long_only`, `long_short`) | `--mode long_only` (Default) |
 | `--plot` | Generate and save a visualization plot | `--plot` |
 | `--optimize` | Run parameter optimization grid search | `--optimize` |
 | `--execute` | Calculate levels for the next session | `--execute` |

@@ -63,7 +63,7 @@ def calculate_indicators(data, donchian_period, atr_period, donchian_exit_period
     
     return data
 
-def backtest(data, initial_capital, risk_per_trade, atr_multiplier, mode='long_short', max_leverage=1.0):
+def backtest(data, initial_capital, risk_per_trade, atr_multiplier, mode='long_only', max_leverage=1.0):
     """Run the backtesting engine with proper cash tracking and no look-ahead bias."""
     cash = initial_capital
     position = 0 # absolute number of shares
@@ -444,8 +444,8 @@ def main():
     parser.add_argument("--d-entry", type=int, help="Donchian entry period")
     parser.add_argument("--d-exit", type=int, help="Donchian exit period")
     parser.add_argument("--atr-mult", type=float, help="ATR multiplier for stop loss")
-    parser.add_argument("--mode", choices=['long_only', 'long_short'], default='long_short', 
-                        help="Select trade direction mode (default: long_short)")
+    parser.add_argument("--mode", choices=['long_only', 'long_short'], default='long_only', 
+                        help="Select trade direction mode (default: long_only)")
     args = parser.parse_args()
     
     print("Welcome to the Donchian Channel & ATR Trading System")

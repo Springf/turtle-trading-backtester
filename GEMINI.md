@@ -57,8 +57,8 @@ python backtester.py
   ```
 - **Trade Mode:** Specify whether to trade only long or both long and short.
   ```bash
-  python backtester.py --mode long_only
-  python backtester.py --mode long_short  # Default
+  python backtester.py --mode long_only  # Default
+  python backtester.py --mode long_short
   ```
 
 ---
