@@ -1,0 +1,10 @@
+test_output/
+__pycache__/
+*.csv
+*.png
+.env
+.venv/
+env/
+venv/
+.idea/
+.vscode/
