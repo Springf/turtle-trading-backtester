@@ -5,21 +5,21 @@ import os
 import argparse
 from datetime import datetime, timedelta
 
-def get_data(ticker, years=5):
+def get_data(ticker, years=5, raw_data=False):
     """Fetch 'years' of daily historical data for a given ticker, rounded to start of year."""
     end_date = datetime.now()
     start_year = end_date.year - years
     start_date = datetime(start_year, 1, 1)
     
-    print(f"Fetching data for {ticker} from {start_date.date()} to {end_date.date()}...")
+    print(f"Fetching data for {ticker} from {start_date.date()} to {end_date.date()} (Raw Data: {raw_data})...")
     
     # Get Ticker object for metadata
     ticker_obj = yf.Ticker(ticker)
-    data = ticker_obj.history(start=start_date, end=end_date)
+    data = ticker_obj.history(start=start_date, end=end_date, auto_adjust=not raw_data)
     
     if data.empty:
         # Fallback to download if history is empty
-        data = yf.download(ticker, start=start_date, end=end_date)
+        data = yf.download(ticker, start=start_date, end=end_date, auto_adjust=not raw_data)
         if data.empty:
             raise ValueError(f"No data found for ticker {ticker}")
     
@@ -63,7 +63,7 @@ def calculate_indicators(data, donchian_period, atr_period, donchian_exit_period
     
     return data
 
-def backtest(data, initial_capital, risk_per_trade, atr_multiplier, mode='long_only', max_leverage=1.0, exit_strategy='trailing', strict_cash=False):
+def backtest(data, initial_capital, risk_per_trade, atr_multiplier, mode='long_only', max_leverage=1.0, strict_cash=False):
     """Run the backtesting engine with proper cash tracking and no look-ahead bias."""
     cash = initial_capital
     position = 0 # absolute number of shares
@@ -74,6 +74,8 @@ def backtest(data, initial_capital, risk_per_trade, atr_multiplier, mode='long_o
     units = 0
     n_atr = 0 # ATR at initial entry
     unit_size = 0
+    highest_peak = 0 # Track peak price for profit protection
+    lowest_peak = 0
     trades = []
     equity_curve = [initial_capital]
     
@@ -120,7 +122,7 @@ def backtest(data, initial_capital, risk_per_trade, atr_multiplier, mode='long_o
                         'type': 'long', 'units': units, 'entry_date': entry_date, 'exit_date': date,
                         'avg_entry': avg_entry_price, 'exit_price': exit_price, 'shares': position,
                         'profit': profit, 'return_pct': (profit / (avg_entry_price * position)) * 100 if (avg_entry_price * position) > 0 else 0,
-                        'reason': exit_reason, 'n_atr': n_atr
+                        'reason': exit_reason, 'n_atr': n_atr, 'ending_capital': cash
                     }
                     for i, unit in enumerate(current_trade_history):
                         trade_record[f'unit{i+1}_date'] = unit['date']; trade_record[f'unit{i+1}_price'] = unit['price']; trade_record[f'unit{i+1}_size'] = unit['size']
@@ -151,11 +153,17 @@ def backtest(data, initial_capital, risk_per_trade, atr_multiplier, mode='long_o
                             current_trade_history.append({'date': date, 'price': add_price, 'size': unit_size})
                             stop_loss = last_entry_price - (atr_multiplier * n_atr)
                     
-                    # Update Trailing Stop for TOMORROW (only if strategy is 'trailing')
-                    if exit_strategy == 'trailing':
-                        new_stop = high - (row['ATR'] * atr_multiplier)
-                        if new_stop > stop_loss:
-                            stop_loss = new_stop
+                    # No trailing stop from daily highs in Pure Turtle mode
+                    # Stop loss remains fixed at Last Entry - (Multiplier * N)
+                    
+                    # 40% Profit Protection: Tighten to 3N trailing stop from peak
+                    current_return = (close - avg_entry_price) / avg_entry_price
+                    if current_return > 0.40:
+                        if high > highest_peak:
+                            highest_peak = high
+                        trail_stop = highest_peak - (3 * n_atr)
+                        if trail_stop > stop_loss:
+                            stop_loss = trail_stop
                 
             elif position_type == 'short':
                 if high >= stop_loss:
@@ -172,7 +180,7 @@ def backtest(data, initial_capital, risk_per_trade, atr_multiplier, mode='long_o
                         'type': 'short', 'units': units, 'entry_date': entry_date, 'exit_date': date,
                         'avg_entry': avg_entry_price, 'exit_price': exit_price, 'shares': position,
                         'profit': profit, 'return_pct': (profit / (avg_entry_price * position)) * 100 if (avg_entry_price * position) > 0 else 0,
-                        'reason': exit_reason, 'n_atr': n_atr
+                        'reason': exit_reason, 'n_atr': n_atr, 'ending_capital': cash
                     }
                     for i, unit in enumerate(current_trade_history):
                         trade_record[f'unit{i+1}_date'] = unit['date']; trade_record[f'unit{i+1}_price'] = unit['price']; trade_record[f'unit{i+1}_size'] = unit['size']
@@ -202,10 +210,17 @@ def backtest(data, initial_capital, risk_per_trade, atr_multiplier, mode='long_o
                             current_trade_history.append({'date': date, 'price': add_price, 'size': unit_size})
                             stop_loss = last_entry_price + (atr_multiplier * n_atr)
 
-                    if exit_strategy == 'trailing':
-                        new_stop = low + (row['ATR'] * atr_multiplier)
-                        if new_stop < stop_loss:
-                            stop_loss = new_stop
+                    # No trailing stop from daily lows in Pure Turtle mode
+                    # Stop loss remains fixed at Last Entry + (Multiplier * N)
+                    
+                    # 40% Profit Protection: Tighten to 3N trailing stop from peak
+                    current_return = (avg_entry_price - close) / avg_entry_price
+                    if current_return > 0.40:
+                        if low < lowest_peak:
+                            lowest_peak = low
+                        trail_stop = lowest_peak + (3 * n_atr)
+                        if trail_stop < stop_loss:
+                            stop_loss = trail_stop
 
         # 2. Check for New Entries (if no position and didn't exit today)
         if position == 0 and not exited_today:
@@ -231,6 +246,7 @@ def backtest(data, initial_capital, risk_per_trade, atr_multiplier, mode='long_o
                     stop_loss = entry_price - stop_distance
                     data.at[date, 'Buy_Signal'] = entry_price
                     current_trade_history = [{'date': date, 'price': entry_price, 'size': unit_size}]
+                    highest_peak = entry_price
                     
             elif mode == 'long_short' and low < row['Donchian_Lower']:
                 entry_price = min(open_p, row['Donchian_Lower'])
@@ -253,6 +269,7 @@ def backtest(data, initial_capital, risk_per_trade, atr_multiplier, mode='long_o
                     stop_loss = entry_price + stop_distance
                     data.at[date, 'Short_Signal'] = entry_price
                     current_trade_history = [{'date': date, 'price': entry_price, 'size': unit_size}]
+                    lowest_peak = entry_price
 
         # 3. Final Equity Calculation for the bar
         if position > 0:
@@ -277,7 +294,7 @@ def backtest(data, initial_capital, risk_per_trade, atr_multiplier, mode='long_o
             'type': position_type, 'units': units, 'entry_date': entry_date, 'exit_date': data_to_test.index[-1],
             'avg_entry': avg_entry_price, 'exit_price': final_price, 'shares': position,
             'profit': profit, 'return_pct': (profit / (avg_entry_price * position)) * 100 if (avg_entry_price * position) > 0 else 0,
-            'reason': "End of Period", 'n_atr': n_atr
+            'reason': "End of Period", 'n_atr': n_atr, 'ending_capital': cash
         }
         for i, unit in enumerate(current_trade_history):
             trade_record[f'unit{i+1}_date'] = unit['date']; trade_record[f'unit{i+1}_price'] = unit['price']; trade_record[f'unit{i+1}_size'] = unit['size']
@@ -401,7 +418,7 @@ def run_optimization(data, initial_capital, risk_per_trade, atr_period, d_range,
         data_with_ind = calculate_indicators(data, d_period, atr_period)
         
         for m_mult in atr_multipliers:
-            final_cap, trades, equity_curve = backtest(data_with_ind.copy(), initial_capital, risk_per_trade, m_mult, mode, exit_strategy=exit_strategy, strict_cash=strict_cash)
+            final_cap, trades, equity_curve = backtest(data_with_ind.copy(), initial_capital, risk_per_trade, m_mult, mode, strict_cash=strict_cash)
             
             if final_cap is not None:
                 total_return = (final_cap - initial_capital) / initial_capital * 100
@@ -419,9 +436,9 @@ def run_optimization(data, initial_capital, risk_per_trade, atr_period, d_range,
                 
     return pd.DataFrame(results)
 
-def execute_mode(ticker, initial_capital, risk_per_trade, donchian_period, donchian_exit_period, atr_multiplier, atr_period):
+def execute_mode(ticker, initial_capital, risk_per_trade, donchian_period, donchian_exit_period, atr_multiplier, atr_period, raw_data=False):
     """Calculate and display trading levels for the next session."""
-    data = get_data(ticker, years=1) # 1 year is enough for calculations
+    data = get_data(ticker, years=1, raw_data=raw_data) # 1 year is enough for calculations
     data = calculate_indicators(data, donchian_period, atr_period, donchian_exit_period)
     
     last_row = data.iloc[-1]
@@ -469,9 +486,8 @@ def main():
     parser.add_argument("--atr-mult", type=float, help="ATR multiplier for stop loss")
     parser.add_argument("--mode", choices=['long_only', 'long_short'], default='long_only', 
                         help="Select trade direction mode (default: long_only)")
-    parser.add_argument("--exit-strategy", choices=['trailing', 'donchian'], default='trailing',
-                        help="Select exit strategy: 'trailing' (ATR trail + Donchian) or 'donchian' (Donchian only)")
     parser.add_argument("--strict-cash", action="store_true", help="Prevent using unrealized gains for pyramiding buying power")
+    parser.add_argument("--raw-data", action="store_true", help="Use raw (unadjusted) market prices instead of dividend-adjusted prices")
     args = parser.parse_args()
     
     print("Welcome to the Donchian Channel & ATR Trading System")
@@ -498,13 +514,6 @@ def main():
         
     atr_period = 14
     
-    # Exit Strategy
-    if args.exit_strategy:
-        exit_strategy = args.exit_strategy
-    else:
-        exit_strat_input = input("Enter Exit Strategy (trailing/donchian, default 'trailing'): ").strip().lower()
-        exit_strategy = exit_strat_input if exit_strat_input in ['trailing', 'donchian'] else 'trailing'
-
     # Strict Cash
     if args.strict_cash:
         strict_cash = True
@@ -533,7 +542,7 @@ def main():
             atr_mult_input = input("Enter ATR Multiplier (default 2.0): ")
             atr_mult = float(atr_mult_input) if atr_mult_input.strip() else 2.0
             
-        execute_mode(ticker, initial_capital, risk_per_trade, d_entry, d_exit, atr_mult, atr_period)
+        execute_mode(ticker, initial_capital, risk_per_trade, d_entry, d_exit, atr_mult, atr_period, raw_data=args.raw_data)
         return
 
     # Backtest Years
@@ -547,7 +556,7 @@ def main():
             backtest_years = 5
     
     try:
-        data = get_data(ticker, years=backtest_years)
+        data = get_data(ticker, years=backtest_years, raw_data=args.raw_data)
         
         if args.optimize:
             print("\n--- Optimization Configuration ---")
@@ -570,7 +579,7 @@ def main():
             m_step = float(m_step_input) if m_step_input.strip() else 0.5
             
             results_df = run_optimization(data, initial_capital, risk_per_trade, atr_period, 
-                                          (d_start, d_end, d_step), (m_start, m_end, m_step), args.mode, exit_strategy, strict_cash)
+                                          (d_start, d_end, d_step), (m_start, m_end, m_step), args.mode, strict_cash)
             
             if not results_df.empty:
                 results_df = results_df.sort_values(by='ratio', ascending=False)
@@ -610,7 +619,7 @@ def main():
                 atr_multiplier = float(atr_mult_input) if atr_mult_input.strip() else 2.0
             
             data_with_ind = calculate_indicators(data, donchian_period, atr_period, donchian_exit_period)
-            final_capital, trades, equity_curve = backtest(data_with_ind, initial_capital, risk_per_trade, atr_multiplier, args.mode, exit_strategy=exit_strategy, strict_cash=strict_cash)
+            final_capital, trades, equity_curve = backtest(data_with_ind, initial_capital, risk_per_trade, atr_multiplier, args.mode, strict_cash=strict_cash)
             
             if final_capital is not None:
                 print_stats(initial_capital, final_capital, trades, equity_curve)
@@ -621,7 +630,6 @@ def main():
                     'donchian_exit_period': donchian_exit_period,
                     'atr_multiplier': atr_multiplier,
                     'mode': args.mode,
-                    'exit_strategy': exit_strategy,
                     'strict_cash': strict_cash
                 }
                 export_trades(trades, ticker, params)
